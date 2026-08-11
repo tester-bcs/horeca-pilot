@@ -1,0 +1,13 @@
+[package]
+name = "luck-pilot"
+version = "0.1.0"
+edition = "2021"
+description = "Форк ai-agent-порта Luck (компилятор+планировщик) — рабочий прототип пайпа бизнес-инкубатора. Нативные проекты не трогает."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+async-trait = "0.1"
+futures-util = "0.3"
+tokio = { version = "1", features = ["full"] }

@@ -1,0 +1,14 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Локальные данные
+*.log
+*.db
+*.db-shm
+*.db-wal
+
+# Редакторы/ОС
+.DS_Store
+.idea/
+.vscode/
