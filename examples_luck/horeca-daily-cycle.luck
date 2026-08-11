@@ -20,10 +20,16 @@ END
 
 # --- A2 Склад: хватает ли сырья под план (порог Среза 5) ---
 NODE stock_check: CLASSIFY
+  AS "Ты классификатор остатков склада. Ответь РОВНО одним словом: ok (остатков хватает) или short (не хватает). Никаких пояснений."
   DO "оценить остатки сырья против потребности плана выпуска"
   INPUT production_plan
   INTO stock_state
-  BRANCHES ok=produce short=purchase
+END
+
+# --- Ветвление: ok -> производство, short -> дозакуп (отдельный BRANCH-узел!) ---
+NODE fork: BRANCH
+  INPUT stock_state
+  BRANCHES ok=produce, short=purchase
 END
 
 # --- A1 Закупка: дозакуп недостающего (ветка short) ---
