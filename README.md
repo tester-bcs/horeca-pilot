@@ -27,6 +27,10 @@ OLLAMA_ONLY=1 cargo run --bin run -- ../examples_luck/horeca-daily-cycle.luck
 
 # Или все 4 сценария разом:
 ../run_all.sh
+
+# Веб-интерфейс (http://localhost:8080 — список сценариев, запуск, прогресс)
+OLLAMA_HOST=http://100.64.0.1:11434 OLLAMA_MODEL=hermes3:8b \
+OLLAMA_ONLY=1 cargo run --bin web -- 8080
 ```
 
 ## Структура
