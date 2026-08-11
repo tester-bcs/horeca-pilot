@@ -27,11 +27,16 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let rt = match FallbackRuntime::from_env() {
-        Ok(r) => Arc::new(r),
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(2);
+    let rt = if std::env::var("OLLAMA_ONLY").is_ok() {
+        println!("== режим: только Ollama ==");
+        Arc::new(luck_pilot::openrouter::FallbackRuntime::ollama_only())
+    } else {
+        match FallbackRuntime::from_env() {
+            Ok(r) => Arc::new(r),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(2);
+            }
         }
     };
     let model = std::env::var("OPENROUTER_MODEL")

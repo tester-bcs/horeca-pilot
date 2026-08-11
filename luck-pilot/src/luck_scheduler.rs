@@ -362,15 +362,23 @@ impl<R: PlanRuntime> PlanExecutor<R> {
 // ---------------------------------------------------------------------------
 
 /// Нормализация ground-значения: строка может содержать JSON — пробуем распарсить.
+/// Если модель/тул обернули JSON в пояснения (в т.ч. "[mock:...] {...}") —
+/// сначала пробуем весь текст, затем вытаскиваем первый {...} объект.
 fn ground_value(value: &Value) -> Value {
     match value {
         Value::String(s) => {
             let t = s.trim();
-            if t.starts_with('{') || t.starts_with('[') {
-                serde_json::from_str(t).unwrap_or_else(|_| value.clone())
-            } else {
-                value.clone()
+            if let Ok(v) = serde_json::from_str::<Value>(t) {
+                return v;
             }
+            if let (Some(start), Some(end)) = (t.find('{'), t.rfind('}')) {
+                if end > start {
+                    if let Ok(v) = serde_json::from_str(&t[start..=end]) {
+                        return v;
+                    }
+                }
+            }
+            value.clone()
         }
         _ => value.clone(),
     }

@@ -43,7 +43,7 @@ impl OpenRouterRuntime {
             "temperature": 0.2,
         });
         let resp = ureq::post(API_URL)
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(10))
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")
             .send_json(body)
@@ -162,11 +162,23 @@ impl FallbackRuntime {
             ollama: OllamaRuntime::from_env(),
         })
     }
+
+    /// Только Ollama (без попыток OpenRouter): env OLLAMA_ONLY=1.
+    pub fn ollama_only() -> Self {
+        Self {
+            openrouter: OpenRouterRuntime::new(String::new(), String::new()),
+            ollama: OllamaRuntime::from_env(),
+        }
+    }
 }
 
 #[async_trait]
 impl PlanRuntime for FallbackRuntime {
     async fn generate(&self, system: Option<&str>, user: &str) -> Result<String, String> {
+        let ollama_only = std::env::var("OLLAMA_ONLY").is_ok();
+        if ollama_only || self.openrouter.api_key.is_empty() {
+            return self.ollama.generate(system, user).await;
+        }
         match self.openrouter.generate(system, user).await {
             Ok(v) => Ok(v),
             Err(e) => {
