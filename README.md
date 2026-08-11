@@ -95,9 +95,19 @@ TOOL-узел возвращает JSON-строку {"stock": N, "need": M} →
 ветки не выбирает — он лишь пишет метку в INTO. Рёбра: fork -> target [label].
 Без отдельного BRANCH-узла сценарий компилируется, но ветки не активируются.
 
-РЕЕСТР VERIFY-ПРЕДИКАТОВ (6 бизнес-предикатов, 35 тестов зелёные):
+ПАТТЕРН VERIFY vs BRANCH (обожжено на сценарии №4): VERIFY-предикаты ждут JSON
+({cash, obligations}, {limit, outstanding}...), а BRANCH-узел ждёт МЕТКУ (ok/risk/...).
+Нельзя писать JSON в input fork'а — он не найдёт метку среди веток. Решение:
+источник JSON (для VERIFY) и источник метки (для BRANCH) — РАЗНЫЕ узлы:
+STEP forecast -> INTO cash_forecast (JSON) -> VERIFY cash_ok; затем отдельный
+CLASSIFY classify_risk -> INTO risk_state (метка) -> fork_cash: BRANCH INPUT risk_state.
+
+РЕЕСТР VERIFY-ПРЕДИКАТОВ (6 бизнес-предикатов, 40 тестов зелёные: 35 юнит + 5 E2E):
 stock_level {stock,need}, order_match {ordered,picked}, cash_ok {cash,obligations},
 shelf_life_ok {expires,horizon} ISO-даты, temp_log_ok {temp,max}, credit_ok {limit,outstanding}.
+E2E-харнесс (tests/e2e_horeca.rs): все 4 сценария исполняются через PlanExecutor
+с HorecaRuntime (реалистичные ответы узлов); include_str! подхватывает правки
+сценариев автоматически; негативный кейс: cash_ok Rejected при кассовом разрыве.
 
 ## Как запустить
 

@@ -21,9 +21,16 @@ NODE verify_cash: VERIFY
   VERIFY cash_ok INTO cash_forecast
 END
 
+# --- Классификация риска: МЕТКА для ветвления (не JSON!) ---
+NODE classify_risk: CLASSIFY
+  DO "оценить риск кассового разрыва по кэш-прогнозу"
+  INPUT cash_forecast
+  INTO risk_state
+END
+
 # --- Ветвление: платить или заморозить ---
 NODE fork_cash: BRANCH
-  INPUT cash_forecast
+  INPUT risk_state
   BRANCHES ok=pay_suppliers, risk=hold_payments
 END
 
@@ -66,7 +73,8 @@ END
 EDGES
   load_receivables -> forecast
   forecast -> verify_cash
-  verify_cash -> fork_cash
+  verify_cash -> classify_risk
+  classify_risk -> fork_cash
   fork_cash -> pay_suppliers [ok]
   fork_cash -> hold_payments [risk]
   check_credit -> verify_credit
