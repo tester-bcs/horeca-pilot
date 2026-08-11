@@ -1,0 +1,71 @@
+# Сценарий №3: инвентаризация и списания (HoReCa)
+# Ритм неделя/месяц (Срез 5), честность остатков (Срез 4 — карточка = факт).
+# TOOL-узлы возвращают JSON: count_api -> {book, actual, allowed}.
+
+# --- Запуск инвентаризации: заморозить склад (A2) ---
+NODE freeze: STEP
+  DO "заморозить склад для инвентаризации: стоп отгрузок и приёмок"
+  INTO freeze_doc
+END
+
+# --- Пересчёт фактических остатков (A2) ---
+NODE count: TOOL
+  TOOL count_api
+  ARGS {"scope": "all"}
+  INTO counted
+END
+
+# --- Сверка учёта и факта: {book, actual, allowed} ---
+NODE compare: STEP
+  DO "сверить учётные остатки с фактическими, зафиксировать расхождения"
+  INPUT counted
+  INTO diff_state
+END
+
+# --- Ветвление: расхождение в пределах нормы или нет (Срез 5 — порог) ---
+NODE fork_diff: BRANCH
+  INPUT diff_state
+  BRANCHES ok=close_inventory, deviation=investigate
+END
+
+# --- Ветка ok: расхождение в норме — списания в пределах допуска ---
+NODE write_off: STEP
+  DO "списать потери в пределах нормы: просрочка, бой, усушка"
+  INTO write_off_doc
+END
+
+# --- Ветка deviation: расхождение выше нормы — расследование ---
+NODE investigate: STEP
+  DO "расследовать крупное расхождение: ошибка учёта, кража, недоприёмка"
+  INTO investigation
+END
+
+# --- Решение по итогам расследования: списание или переоценка ---
+NODE resolve: STEP
+  DO "принять решение по расхождению: списать, переоценить, завести на ответственного"
+  INTO resolution
+END
+
+# --- Схождение: закрыть инвентаризацию, обновить карточки (A2) ---
+NODE close_inventory: STEP
+  DO "закрыть инвентаризацию: обновить учётные остатки, сформировать акт"
+  INTO inventory_act
+END
+
+# --- Отчёт (A7): потери и расхождения за период ---
+NODE inventory_report: STEP
+  DO "сформировать отчёт: потери, расхождения, тренд по периодам"
+  INTO inventory_report_doc
+END
+
+EDGES
+  freeze -> count
+  count -> compare
+  compare -> fork_diff
+  fork_diff -> write_off [ok]
+  fork_diff -> investigate [deviation]
+  investigate -> resolve
+  write_off -> close_inventory
+  resolve -> close_inventory
+  close_inventory -> inventory_report
+END

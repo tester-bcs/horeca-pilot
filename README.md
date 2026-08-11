@@ -77,22 +77,34 @@ TOOL-узел возвращает JSON-строку {"stock": N, "need": M} →
 - Отсрочка клиента: 7–30 дней (дебиторка — главный риск И2)
 - OTIF-таргет: ≥ 95% (главный KPI A7)
 
-## Сценарий №1 (horeca-daily-cycle.luck)
+## Сценарии (все валидны, проверено компилятором luck-pilot)
 
-Дневной цикл: intake → plan → stock_check {ok→produce | short→purchase→produce} → pick →
-verify_full → dispatch → bill → report. Покрывает все 7 модулей, оба контура
-(материальный и денежный), И1–И4. НЕ покрыто (следующие сценарии):
-- возвраты/рекламации (обратный поток, Срез 5)
-- инвентаризация и списания (ритм неделя/месяц)
-- cash-прогноз и кредитный контроль (A6 — отдельный подграф)
-- сезонность/праздничные пики (SPAWN-план месяца)
+1. horeca-daily-cycle.luck — дневной цикл (10 узлов/10 рёбер): intake → plan →
+   stock_check → fork {ok→produce | short→purchase→produce} → pick → verify_full →
+   dispatch → bill → report. И1–И4, оба контура.
+2. horeca-returns.luck — возвраты/рекламации (10/16): обратный поток (Срез 5),
+   4 ветки по причине (брак/доставка/просрочка/пересорт) → settle → отчёт.
+3. horeca-inventory.luck — инвентаризация (9/11): freeze → count → compare →
+   fork {ok→write_off | deviation→investigate→resolve} → close → отчёт (ритм неделя).
+4. horeca-cashflow.luck — cash-прогноз и кредитный контроль A6 (10/12):
+   receivables → forecast → VERIFY cash_ok → fork {ok→pay | risk→hold} +
+   credit_api → VERIFY credit_ok → settle_cash → отчёт (И2, дебиторка 7–30 дней).
+
+ПАТТЕРН ВЕТВЛЕНИЯ (важно, обожжено на сценарии №1): ветвление исполняет только
+ОТДЕЛЬНЫЙ узел `fork: BRANCH` (INPUT + BRANCHES label=target), а CLASSIFY сам
+ветки не выбирает — он лишь пишет метку в INTO. Рёбра: fork -> target [label].
+Без отдельного BRANCH-узла сценарий компилируется, но ветки не активируются.
+
+РЕЕСТР VERIFY-ПРЕДИКАТОВ (6 бизнес-предикатов, 35 тестов зелёные):
+stock_level {stock,need}, order_match {ordered,picked}, cash_ok {cash,obligations},
+shelf_life_ok {expires,horizon} ISO-даты, temp_log_ok {temp,max}, credit_ok {limit,outstanding}.
 
 ## Как запустить
 
 ```bash
 cd luck-pilot
-cargo run --bin validate -- ../horeca-daily-cycle.luck   # валидация
-cargo test                                               # 23 теста
+cargo test                                               # 35 тестов
+cargo run --bin validate -- ../examples_luck/horeca-daily-cycle.luck  # валидация сценария
 ```
 
 ## Открытые вопросы

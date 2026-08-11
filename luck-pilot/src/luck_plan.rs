@@ -198,6 +198,7 @@ const KNOWN_PREDICATES: &[&str] = &[
     "cash_ok",
     "shelf_life_ok",
     "temp_log_ok",
+    "credit_ok",
 ];
 
 // ---------------------------------------------------------------------------

@@ -347,6 +347,7 @@ impl<R: PlanRuntime> PlanExecutor<R> {
             "cash_ok" => verify_cash_ok(value),
             "shelf_life_ok" => verify_shelf_life_ok(value),
             "temp_log_ok" => verify_temp_log_ok(value),
+            "credit_ok" => verify_credit_ok(value),
             // v1: файловые предикаты не реализованы в рантайме — консервативный отказ.
             other => Err(format!(
                 "verify {node_id}: predicate '{other}' not implemented in scheduler (v1)"
@@ -471,6 +472,21 @@ fn verify_temp_log_ok(value: &Value) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("temp_log_ok: температура {temp} > {max}"))
+    }
+}
+
+/// И2 (кредитный контроль): задолженность клиента в пределах лимита. Ожидает {limit, outstanding}.
+fn verify_credit_ok(value: &Value) -> Result<(), String> {
+    let obj = ground_value(value)
+        .as_object()
+        .cloned()
+        .ok_or("credit_ok: ожидается JSON-объект {limit, outstanding}")?;
+    let limit = num_field(&obj, "limit").ok_or("credit_ok: нет поля limit")?;
+    let outstanding = num_field(&obj, "outstanding").ok_or("credit_ok: нет поля outstanding")?;
+    if outstanding <= limit {
+        Ok(())
+    } else {
+        Err(format!("credit_ok: задолженность {outstanding} > лимит {limit}"))
     }
 }
 
@@ -729,6 +745,12 @@ END
     fn temp_log_ok_checks_temperature() {
         assert!(verify_temp_log_ok(&json!({"temp": 4.0, "max": 8.0})).is_ok());
         assert!(verify_temp_log_ok(&json!({"temp": 9.5, "max": 8.0})).is_err());
+    }
+
+    #[test]
+    fn credit_ok_checks_client_limit() {
+        assert!(verify_credit_ok(&json!({"limit": 100_000.0, "outstanding": 80_000.0})).is_ok());
+        assert!(verify_credit_ok(&json!({"limit": 100_000.0, "outstanding": 120_000.0})).is_err());
     }
 
     #[test]

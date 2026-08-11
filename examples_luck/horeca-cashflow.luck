@@ -1,0 +1,77 @@
+# Сценарий №4: cash-прогноз и кредитный контроль (A6 Деньги)
+# Денежный контур (И2 — кэш-цикл с дебиторкой 7-30 дней).
+# VERIFY: cash_ok {cash, obligations}, credit_ok {limit, outstanding}.
+
+# --- Дебиторка: счета клиентов, сроки оплаты (A6) ---
+NODE load_receivables: TOOL
+  TOOL receivables_api
+  ARGS {"horizon_days": 30}
+  INTO receivables
+END
+
+# --- Кэш-прогноз: текущий кэш + входящие - обязательства ---
+NODE forecast: STEP
+  DO "рассчитать кэш-прогноз на горизонт: cash, obligations"
+  INPUT receivables
+  INTO cash_forecast
+END
+
+# --- И2: нет кассового разрыва (порог из Среза 5) ---
+NODE verify_cash: VERIFY
+  VERIFY cash_ok INTO cash_forecast
+END
+
+# --- Ветвление: платить или заморозить ---
+NODE fork_cash: BRANCH
+  INPUT cash_forecast
+  BRANCHES ok=pay_suppliers, risk=hold_payments
+END
+
+# --- Ветка ok: платежи поставщикам по графику ---
+NODE pay_suppliers: STEP
+  DO "оплатить поставщикам по графику в пределах кэш-прогноза"
+  INTO payments
+END
+
+# --- Ветка risk: кассовый разрыв — заморозить платежи ---
+NODE hold_payments: STEP
+  DO "заморозить платежи, пересмотреть график, подключить овердрафт/факторинг"
+  INTO cash_action
+END
+
+# --- Кредитный контроль: лимиты клиентов с отсрочкой (A6) ---
+NODE check_credit: TOOL
+  TOOL credit_api
+  ARGS {"clients": "hoReCa"}
+  INTO client_credit
+END
+
+# --- Клиент в лимите: {limit, outstanding} ---
+NODE verify_credit: VERIFY
+  VERIFY credit_ok INTO client_credit
+END
+
+# --- Схождение: провести платежи и зафиксировать денежный контур ---
+NODE settle_cash: STEP
+  DO "провести платёжный день: исходящие, входящие, остаток на конец дня"
+  INTO cash_day
+END
+
+# --- Отчёт (A7): cash-позиция, дебиторка, риски ---
+NODE cash_report: STEP
+  DO "сформировать отчёт: cash-позиция, дебиторка, прогноз, риски"
+  INTO cash_report_doc
+END
+
+EDGES
+  load_receivables -> forecast
+  forecast -> verify_cash
+  verify_cash -> fork_cash
+  fork_cash -> pay_suppliers [ok]
+  fork_cash -> hold_payments [risk]
+  check_credit -> verify_credit
+  pay_suppliers -> settle_cash
+  hold_payments -> settle_cash
+  verify_credit -> settle_cash
+  settle_cash -> cash_report
+END

@@ -23,7 +23,12 @@ NODE stock_check: CLASSIFY
   DO "оценить остатки сырья против потребности плана выпуска"
   INPUT production_plan
   INTO stock_state
-  BRANCHES ok=produce short=purchase
+END
+
+# --- Ветвление: ok -> производство, short -> дозакуп (отдельный BRANCH-узел!) ---
+NODE fork: BRANCH
+  INPUT stock_state
+  BRANCHES ok=produce, short=purchase
 END
 
 # --- A1 Закупка: дозакуп недостающего (ветка short) ---
@@ -76,8 +81,9 @@ END
 EDGES
   intake -> plan
   plan -> stock_check
-  stock_check -> produce [ok]
-  stock_check -> purchase [short]
+  stock_check -> fork
+  fork -> produce [ok]
+  fork -> purchase [short]
   purchase -> produce
   produce -> pick
   pick -> verify_full
