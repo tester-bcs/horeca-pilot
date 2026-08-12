@@ -51,6 +51,6 @@ OLLAMA_ONLY=1 cargo run --bin web -- 8080
 
 ## Ссылки
 
-- Репо: https://github.com/tester-bcs/horeca-pilot (private)
+- Репо: https://github.com/tester-bcs/horeca-pilot (public, open source)
 - Технические детали: docs/TECH.md
 - Скилл: luck-language (паттерны, питфоллы, живые рантаймы)
