@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+### Удалено
+- `luck-core/` (старый reference-форк канонического крейта) — дублировал
+  `luck-pilot/vendor/luck-engine/`, теперь единственный источник правды.
+
 ## v0.2.0 — 2026-08-12
 Переход `luck-pilot` на канонический движок Luck ([tester-bcs/luck](https://github.com/tester-bcs/luck) —
 консолидированный апстрим: Python `luck-lang` архивирован и слит в него вместе

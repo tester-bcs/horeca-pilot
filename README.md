@@ -57,8 +57,6 @@ OLLAMA_ONLY=1 cargo run --bin web -- 8080
 ├── luck-pilot/          # обвязка пилота: IDEF0-маппер, OpenRouter/Ollama-рантайм,
 │                         # бизнес-VERIFY-предикаты HoReCa (verify.rs)
 │   └── vendor/luck-engine/  # вендор канонического движка tester-bcs/luck (не трогаем)
-├── luck-core/           # устарело — оставлено для сверки, кандидат на удаление
-│                         # (см. TODO.md: теперь есть vendor/luck-engine)
 ├── run_all.sh           # единый живой прогон всех сценариев
 └── docs/TECH.md         # технические детали: мост 1+6→Luck, паттерны, предикаты
 ```
