@@ -1,79 +1,57 @@
 # Сценарий №2: возвраты и рекламации (HoReCa)
-# Обратный материальный поток (Срез 5 — отказы/восстановление).
-# Паттерн ветвления: CLASSIFY (причина) -> BRANCH-узел -> ветки.
+# Соглашения BRANCH/MERGE/VERIFY/POLICY — см. horeca-daily-cycle.luck (шапка).
 
-# --- Приём рекламации от клиента (A5 Торговля, обратный поток) ---
-NODE intake_return: STEP
+NODE intake_return: STEP [GENERATIVE]
   DO "принять рекламацию клиента: товар, причина, документы"
+  VERIFY checker="not_empty"
   INTO return_doc
 END
 
-# --- Форма честна (Срез 4): рекламация зафиксирована ---
-NODE verify_return: VERIFY
-  VERIFY not_empty INTO return_doc
-END
-
-# --- Классификация причины возврата (Срез 5 — состояние отказа) ---
-NODE classify_return: CLASSIFY
-  AS "Ты классификатор причин возврата. Ответь РОВНО одним словом: defect (брак производства), damaged (повреждение при доставке), expired (просрочка) или wrong_item (не тот товар). Никаких пояснений."
-  DO "классифицировать причину возврата: брак производства, повреждение при доставке, просрочка, не тот товар"
-  INPUT return_doc
+NODE classify_return: CLASSIFY [GENERATIVE]
+  INPUT "причина возврата: брак производства, повреждение при доставке, просрочка, не тот товар"
+  LABELS defect="брак", damaged="повреждение", expired="просрочка", wrong_item="пересорт"
   INTO return_reason
 END
 
-# --- Ветвление по причине ---
-NODE fork_return: BRANCH
-  INPUT return_reason
-  BRANCHES defect=scrap_replace, damaged=replace_ship, expired=credit_note, wrong_item=restock
-END
-
-# --- Ветка: брак производства (И3) — списать, выдать замену за наш счёт ---
-NODE scrap_replace: STEP
+NODE scrap_replace: STEP [GENERATIVE]
   DO "списать брак, выдать замену клиенту за счёт производства"
   INTO scrap_doc
 END
 
-# --- Ветка: повреждение при доставке (И4) — замена за счёт доставки ---
-NODE replace_ship: STEP
+NODE replace_ship: STEP [GENERATIVE]
   DO "выдать замену за счёт доставки, оформить претензию перевозчику"
   INTO ship_claim
 END
 
-# --- Ветка: просрочка (И3) — списание + кредит-нота ---
-NODE credit_note: STEP
+NODE credit_note: STEP [GENERATIVE]
   DO "списать просроченный товар, оформить кредит-ноту клиенту"
   INTO credit_doc
 END
 
-# --- Ветка: не тот товар — возврат на склад (пересорт) ---
-NODE restock: STEP
+NODE restock: STEP [GENERATIVE]
   DO "принять товар обратно на склад, разобрать пересорт"
   INTO restock_doc
 END
 
-# --- Схождение: обновить склад и деньги (A2 + A6) ---
-NODE settle: STEP
+NODE settle: STEP [GENERATIVE]
   DO "провести возврат по складу и деньгам: списания, замены, кредит-ноты"
   INTO settlement
 END
 
-# --- Итог: отчёт по возвратам (A7, KPI — доля возвратов) ---
-NODE returns_report: STEP
+NODE returns_report: STEP [GENERATIVE]
   DO "сформировать отчёт по возвратам: причины, суммы, тренд"
   INTO returns_report_doc
 END
 
-EDGES
-  intake_return -> verify_return
-  verify_return -> classify_return
-  classify_return -> fork_return
-  fork_return -> scrap_replace [defect]
-  fork_return -> replace_ship [damaged]
-  fork_return -> credit_note [expired]
-  fork_return -> restock [wrong_item]
-  scrap_replace -> settle
-  replace_ship -> settle
-  credit_note -> settle
-  restock -> settle
+EDGES:
+  intake_return -> classify_return
+  classify_return => scrap_replace [брак]
+  classify_return => replace_ship [повреждение]
+  classify_return => credit_note [просрочка]
+  classify_return => restock [пересорт]
+  scrap_replace ~> settle
+  replace_ship ~> settle
+  credit_note ~> settle
+  restock ~> settle
   settle -> returns_report
 END

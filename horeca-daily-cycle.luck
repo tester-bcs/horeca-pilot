@@ -1,93 +1,91 @@
 # Сквозной сценарий №1: дневной цикл обеспечения ресторана (HoReCa)
-# Производная от 1+6: модули A1-A7 -> узлы, потоки Среза 3 -> рёбра,
-# честность формы (Срез 4) + пороги (Срез 5) -> VERIFY, отказы -> ON_FAIL/REJECT.
-# Синтаксис: подмножество Luck-компилятора ai-agent (luck_compile.rs).
-# ПЕРЕД ПРОГОНОМ: сверить слот BRANCHES и рёбра с метками с текущим luck_compile.rs
-# (точный синтаксис ветвления в Rust-порте).
+# Канонический синтаксис Luck (vendor/luck-engine, crate `luck`). Соглашения
+# миграции с автономного форка (см. examples_luck/README-migration.md нет —
+# фиксирую здесь и одинаково во всех 4 сценариях):
+#
+#   BRANCH  — нет отдельного узла BRANCH. Ветвление = edges "=>" с меткой
+#             [label], сверяемой (регистронезависимо) с выводом узла-источника
+#             (обычно CLASSIFY). Реализация: vendor scheduler.rs::edge_is_active.
+#   MERGE   — нет отдельного узла MERGE. Схождение веток = edges "~>"
+#             (EdgeType::Merge): активация по ЛЮБОМУ исполненному предку, а не
+#             по всем — то есть именно то, что нужно после BRANCH (только одна
+#             ветка когда-либо исполняется). Обычный STEP-узел с таким входом
+#             и есть "точка слияния"; его DO описывает агрегацию.
+#             ВАЖНО: нельзя смешивать на одном узле входящие Branch-рёбра с
+#             Merge/Seq-рёбрами от разных предков — группы (seq/branch/merge)
+#             комбинируются через AND, а нужна чистая OR-семантика на границе
+#             слияния. Поэтому оба "хвоста" ветвления сведены к единому типу
+#             ребра в точку слияния.
+#   VERIFY  — канонический слот на STEP/TASK: `VERIFY checker="имя"`, либо
+#             `VERIFY checker="имя", subject="узел"`. `subject` — соглашение
+#             luck-pilot (не часть vendor-грамматики, просто ARGS-пара): id
+#             узла, чей вывод проверяется; по умолчанию — собственный вывод
+#             узла. vendor/luck-engine слот только парсит, не проверяет —
+#             enforcement живёт в luck-pilot/src/verify.rs (см. модуль).
+#   POLICY  — слот на TOOL (require=...); в этих сценариях не задействован
+#             (демо-инструменты без подтверждения), но грамматика поддерживает.
 
-# --- A5 Торговля: вход ядра (заказ клиента) ---
-NODE intake: STEP
+NODE intake: STEP [GENERATIVE]
   DO "принять заказы клиентов HoReCa на день"
   INTO orders
 END
 
-# --- A7 Управление: план выпуска по заказам и остаткам ---
-NODE plan: STEP
+NODE plan: STEP [GENERATIVE]
   DO "составить план производства на день: заказы минус остатки готовой продукции"
-  INPUT orders
   INTO production_plan
 END
 
-# --- A2 Склад: хватает ли сырья под план (порог Среза 5) ---
-NODE stock_check: CLASSIFY
-  DO "оценить остатки сырья против потребности плана выпуска"
-  INPUT production_plan
+NODE stock_check: CLASSIFY [GENERATIVE]
+  INPUT "остатки сырья против потребности плана выпуска"
+  LABELS ok="хватает", short="нехватка"
   INTO stock_state
 END
 
-# --- Ветвление: ok -> производство, short -> дозакуп (отдельный BRANCH-узел!) ---
-NODE fork: BRANCH
-  INPUT stock_state
-  BRANCHES ok=produce, short=purchase
-END
-
-# --- A1 Закупка: дозакуп недостающего (ветка short) ---
-NODE purchase: STEP
+NODE purchase: STEP [GENERATIVE]
   DO "сформировать заказ поставщику на недостающее сырьё"
-  INPUT stock_state
   INTO purchase_order
 END
 
-# --- A3 Производство: выпуск по техкартам (обе ветки сходятся) ---
-NODE produce: STEP
-  DO "произвести продукцию по техкартам и плану выпуска"
-  INPUT production_plan
-  INTO finished_goods
+NODE produce_ok: STEP [GENERATIVE]
+  DO "произвести продукцию по техкартам и плану выпуска (остатков хватило)"
+  INTO finished_goods_ok
 END
 
-# --- A2 Склад: комплектация заказа клиента ---
-NODE pick: STEP
+NODE produce_short: STEP [GENERATIVE]
+  DO "произвести продукцию по техкартам и плану выпуска (после дозакупки)"
+  INTO finished_goods_short
+END
+
+NODE pick: STEP [GENERATIVE]
   DO "скомплектовать заказ клиента со склада готовой продукции"
-  INPUT finished_goods
+  VERIFY checker="not_empty"
   INTO picked_order
 END
 
-# --- И4: полнота комплектации = заказ (VERIFY на ребре A2 -> A4) ---
-NODE verify_full: VERIFY
-  VERIFY not_empty INTO picked_order
-END
-
-# --- A4 Доставка: отгрузка в окно доставки ---
-NODE dispatch: STEP
+NODE dispatch: STEP [GENERATIVE]
   DO "доставить заказ клиенту в согласованное окно, оформить ТТН"
-  INPUT picked_order
   INTO delivery_note
 END
 
-# --- A5/A6 Деньги: счёт, продажа, дебиторка (отсрочка 7-30 дней) ---
-NODE bill: STEP
+NODE bill: STEP [GENERATIVE]
   DO "выставить счёт, зафиксировать продажу в дебиторке"
-  INPUT delivery_note
   INTO invoice
 END
 
-# --- A7: OTIF-отчёт дня (главный KPI, Срез 5) ---
-NODE report: STEP
+NODE report: STEP [GENERATIVE]
   DO "сформировать OTIF-отчёт дня: вовремя и полностью"
-  INPUT invoice
   INTO daily_report
 END
 
-EDGES
+EDGES:
   intake -> plan
   plan -> stock_check
-  stock_check -> fork
-  fork -> produce [ok]
-  fork -> purchase [short]
-  purchase -> produce
-  produce -> pick
-  pick -> verify_full
-  verify_full -> dispatch
+  stock_check => produce_ok [хватает]
+  stock_check => purchase [нехватка]
+  purchase -> produce_short
+  produce_ok ~> pick
+  produce_short ~> pick
+  pick -> dispatch
   dispatch -> bill
   bill -> report
 END

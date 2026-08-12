@@ -1,20 +1,30 @@
-//! luck-pilot — автономный форк подмножества Luck (компилятор + планировщик).
+//! luck-pilot — рабочий прототип пайпа бизнес-инкубатора (HoReCa) поверх
+//! КАНОНИЧЕСКОГО luck-engine (vendor/luck-engine, crate `luck`, path-
+//! зависимость `luck-engine` в Cargo.toml).
 //!
-//! Происхождение: ~/ws1/ai-agent/src/{luck_plan,luck_compile,luck_scheduler}.rs
-//! (порт Luck в ai-agent) — скопировано как прототип для пилота HoReCa
-//! (бизнес-инкубатор). Нативные проекты (luck-репо Python, luck-repo Rust,
-//! ai-agent) НЕ модифицируются.
+//! История: раньше luck-pilot был автономным форком подмножества Luck
+//! (собственные luck_plan/luck_compile/luck_scheduler.rs). Эти три модуля
+//! удалены — их заменяет vendor/luck-engine целиком (парсер, реестр типов
+//! узлов, constrained decoding, планировщик). vendor/luck-engine НИКОГДА
+//! не модифицируется (read-only, проектная политика).
 //!
-//! Отличия от оригинала: вырезан AiAgentRuntime (зависимости от
-//! provider/tool_routing/types ai-agent); остался PlanRuntime trait —
-//! реализации пишутся под пайп (см. тесты: MockRuntime/EmptyRuntime).
+//! Что осталось специфичным для luck-pilot (не часть vendor-движка):
+//!   - `verify` — VERIFY-предикаты бизнес-домена (HoReCa) + enforcement
+//!     слота VERIFY, который vendor только парсит, но не проверяет.
+//!   - `idef0` — маппер IDEF0 (ICOM-блоки) -> граф luck-engine.
+//!   - `openrouter` — ChatTransport для OpenRouter/Ollama, обёрнутый в
+//!     vendor-овский `anthropic::ValidatingBackend`.
 
-pub mod luck_plan;
-pub mod luck_compile;
-pub mod luck_scheduler;
-pub mod openrouter;
 pub mod idef0;
+pub mod openrouter;
+pub mod verify;
 
-pub use luck_plan::{Node, NodeKind, Plan, Policy, VerifySpec, validate, parse_and_validate};
-pub use luck_compile::compile;
-pub use luck_scheduler::{PlanExecutor, PlanOutcome, PlanEvent, PlanRuntime};
+// Реэкспорт публичного API движка — так, чтобы `luck_pilot::{parse, Node, ...}`
+// работал без прямой зависимости вызывающего кода от имени пакета `luck`.
+pub use luck_engine::parser::{parse, parse_fragment, Edge, EdgeType, IntentGraph, LuckParseError, Node, SlotData};
+pub use luck_engine::registry::{Kind, Subtype};
+pub use luck_engine::scheduler::{
+    ComputationCache, ExecutionResult, InvalidModelOutput, MockBackend, ModelBackend, Scheduler,
+    ToolRegistry,
+};
+pub use verify::{run_verified, VerifiedOutcome};

@@ -1,87 +1,65 @@
 # Сценарий №4: cash-прогноз и кредитный контроль (A6 Деньги)
+# Соглашения BRANCH/MERGE/VERIFY/POLICY — см. horeca-daily-cycle.luck (шапка).
 # Денежный контур (И2 — кэш-цикл с дебиторкой 7-30 дней).
-# VERIFY: cash_ok {cash, obligations}, credit_ok {limit, outstanding}.
+# VERIFY: cash_ok {cash, obligations} на самом forecast (собственный вывод),
+# credit_ok {limit, outstanding} на отдельном STEP verify_credit — TOOL-узлы
+# не имеют слота VERIFY в реестре (только STEP/TASK), поэтому проверка
+# TOOL-вывода вынесена в следующий STEP через `subject="check_credit"`.
 
-# --- Дебиторка: счета клиентов, сроки оплаты (A6) ---
-NODE load_receivables: TOOL
-  TOOL receivables_api
-  ARGS {"horizon_days": 30}
-  INTO receivables
+NODE load_receivables: TOOL [EXTERNAL]
+  CALL receivables_api WITH horizon_days=30
 END
 
-# --- Кэш-прогноз: текущий кэш + входящие - обязательства ---
-NODE forecast: STEP
-  AS "Ты расчётчик кэш-прогноза. Верни ТОЛЬКО валидный JSON без пояснений: {\"cash\": <число>, \"obligations\": <число>}. Никакого текста вокруг."
-  DO "рассчитать кэш-прогноз на горизонт: cash, obligations"
-  INPUT receivables
+NODE forecast: STEP [GENERATIVE]
+  DO "рассчитать кэш-прогноз на горизонт: JSON {cash, obligations}"
+  VERIFY checker="cash_ok"
   INTO cash_forecast
 END
 
-# --- И2: нет кассового разрыва (порог из Среза 5) ---
-NODE verify_cash: VERIFY
-  VERIFY cash_ok INTO cash_forecast
-END
-
-# --- Классификация риска: МЕТКА для ветвления (не JSON!) ---
-NODE classify_risk: CLASSIFY
-  AS "Ты классификатор кассового риска. Ответь РОВНО одним словом: ok (кассового разрыва нет) или risk (есть риск разрыва). Никаких пояснений."
-  DO "оценить риск кассового разрыва по кэш-прогнозу"
-  INPUT cash_forecast
+NODE classify_risk: CLASSIFY [GENERATIVE]
+  INPUT "риск кассового разрыва по кэш-прогнозу"
+  LABELS ok="норма", risk="риск"
   INTO risk_state
 END
 
-# --- Ветвление: платить или заморозить ---
-NODE fork_cash: BRANCH
-  INPUT risk_state
-  BRANCHES ok=pay_suppliers, risk=hold_payments
-END
-
-# --- Ветка ok: платежи поставщикам по графику ---
-NODE pay_suppliers: STEP
+NODE pay_suppliers: STEP [GENERATIVE]
   DO "оплатить поставщикам по графику в пределах кэш-прогноза"
   INTO payments
 END
 
-# --- Ветка risk: кассовый разрыв — заморозить платежи ---
-NODE hold_payments: STEP
+NODE hold_payments: STEP [GENERATIVE]
   DO "заморозить платежи, пересмотреть график, подключить овердрафт/факторинг"
   INTO cash_action
 END
 
-# --- Кредитный контроль: лимиты клиентов с отсрочкой (A6) ---
-NODE check_credit: TOOL
-  TOOL credit_api
-  ARGS {"clients": "hoReCa"}
+NODE check_credit: TOOL [EXTERNAL]
+  CALL credit_api WITH clients="hoReCa"
+END
+
+NODE verify_credit: STEP [GENERATIVE]
+  DO "проверить лимиты клиентов с отсрочкой"
+  VERIFY checker="credit_ok", subject="check_credit"
   INTO client_credit
 END
 
-# --- Клиент в лимите: {limit, outstanding} ---
-NODE verify_credit: VERIFY
-  VERIFY credit_ok INTO client_credit
-END
-
-# --- Схождение: провести платежи и зафиксировать денежный контур ---
-NODE settle_cash: STEP
+NODE settle_cash: STEP [GENERATIVE]
   DO "провести платёжный день: исходящие, входящие, остаток на конец дня"
   INTO cash_day
 END
 
-# --- Отчёт (A7): cash-позиция, дебиторка, риски ---
-NODE cash_report: STEP
+NODE cash_report: STEP [GENERATIVE]
   DO "сформировать отчёт: cash-позиция, дебиторка, прогноз, риски"
   INTO cash_report_doc
 END
 
-EDGES
+EDGES:
   load_receivables -> forecast
-  forecast -> verify_cash
-  verify_cash -> classify_risk
-  classify_risk -> fork_cash
-  fork_cash -> pay_suppliers [ok]
-  fork_cash -> hold_payments [risk]
+  forecast -> classify_risk
+  classify_risk => pay_suppliers [норма]
+  classify_risk => hold_payments [риск]
   check_credit -> verify_credit
-  pay_suppliers -> settle_cash
-  hold_payments -> settle_cash
+  pay_suppliers ~> settle_cash
+  hold_payments ~> settle_cash
   verify_credit -> settle_cash
   settle_cash -> cash_report
 END

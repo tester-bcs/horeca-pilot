@@ -1,11 +1,16 @@
-//! CLI: живое исполнение .luck-сценария.
-//! Цепочка рантаймов: OpenRouter (nemotron free) -> Ollama (локальная, фоллбэк).
+//! CLI: живое исполнение .luck-сценария на каноническом luck-engine.
+//! Цепочка транспортов: OpenRouter (nemotron free) -> Ollama (локальная, фоллбэк),
+//! обёрнутая vendor-овским `anthropic::ValidatingBackend` (грамматика/ретраи).
 //! Использование:
 //!   OPENROUTER_API_KEY=*** cargo run --bin run -- <file.luck>
 //!   OLLAMA_MODEL=<model> OLLAMA_HOST=<host> — настройка фоллбэка.
+//!   OLLAMA_ONLY=1 — только локальная Ollama.
 
-use luck_pilot::{compile, openrouter::FallbackRuntime, PlanExecutor, PlanOutcome};
-use std::sync::Arc;
+use luck_engine::anthropic::ValidatingBackend;
+use luck_engine::parser::parse;
+use luck_engine::scheduler::{Scheduler, ToolRegistry};
+use luck_pilot::openrouter::{register_demo_tools, FallbackTransport};
+use luck_pilot::verify::{run_verified, VerifiedOutcome};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -20,52 +25,63 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let plan = match compile(&src) {
-        Ok(p) => p,
+    let mut graph = match parse(&src) {
+        Ok(g) => g,
         Err(e) => {
             eprintln!("compile error: {e}");
             std::process::exit(1);
         }
     };
-    let rt = if std::env::var("OLLAMA_ONLY").is_ok() {
+
+    let transport = if std::env::var("OLLAMA_ONLY").is_ok() {
         println!("== режим: только Ollama ==");
-        Arc::new(luck_pilot::openrouter::FallbackRuntime::ollama_only())
+        FallbackTransport::ollama_only()
     } else {
-        match FallbackRuntime::from_env() {
-            Ok(r) => Arc::new(r),
+        match FallbackTransport::from_env() {
+            Ok(t) => t,
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(2);
             }
         }
     };
-    let model = std::env::var("OPENROUTER_MODEL")
-        .unwrap_or_else(|_| luck_pilot::openrouter::DEFAULT_MODEL.to_string());
-    let ollama = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "hermes3:8b".into());
-    println!("== исполнение плана: {} ({} узлов) ==", args[1], plan.nodes.len());
-    println!("== цепочка: openrouter[{model}] -> ollama[{ollama}] ==");
-    let mut ex = PlanExecutor::new(rt);
-    let runtime = tokio::runtime::Runtime::new().expect("tokio");
-    let outcome = runtime.block_on(ex.run(&plan));
-    match &outcome {
-        PlanOutcome::Completed { result } => {
-            println!("== ГОТОВО. result: {result} ==");
+    let mut backend = ValidatingBackend::new(transport, 3);
+    let mut tools = ToolRegistry::new();
+    register_demo_tools(&mut tools);
+
+    println!("== исполнение плана: {} ({} узлов) ==", args[1], graph.nodes.len());
+    let mut sched = Scheduler::new(&mut backend, &mut tools);
+    let outcome = match run_verified(&mut sched, &mut graph, "root") {
+        Ok(o) => o,
+        Err(fatal) => {
+            eprintln!("== ФАТАЛЬНЫЙ СБОЙ: {fatal} ==");
+            std::process::exit(2);
         }
-        PlanOutcome::Rejected { reason } => {
-            println!("== ОТКАЗ (состояние графа): {reason} ==");
+    };
+
+    let exit_code = match &outcome {
+        VerifiedOutcome::Completed(result) => {
+            println!("== ГОТОВО ==");
+            print_outputs(&result.outputs);
+            0
         }
-    }
-    println!("== store (ключи -> значения) ==");
-    for (k, v) in ex.store() {
-        let s = v.to_string();
-        // UTF-8-safe обрезка: по char-границам (не по байтам!)
-        let s = if s.chars().count() > 120 {
-            let truncated: String = s.chars().take(120).collect();
-            format!("{truncated}…")
+        VerifiedOutcome::Rejected { reason, partial } => {
+            println!("== ОТКАЗ: {reason} ==");
+            print_outputs(&partial.outputs);
+            1
+        }
+    };
+    std::process::exit(exit_code);
+}
+
+fn print_outputs(outputs: &std::collections::BTreeMap<String, String>) {
+    println!("== store (node_id -> вывод) ==");
+    for (k, v) in outputs {
+        let s: String = if v.chars().count() > 120 {
+            format!("{}…", v.chars().take(120).collect::<String>())
         } else {
-            s
+            v.clone()
         };
         println!("  {k}: {s}");
     }
-    std::process::exit(if matches!(outcome, PlanOutcome::Completed { .. }) { 0 } else { 1 });
 }

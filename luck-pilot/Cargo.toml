@@ -5,6 +5,7 @@ edition = "2021"
 description = "Форк ai-agent-порта Luck (компилятор+планировщик) — рабочий прототип пайпа бизнес-инкубатора. Нативные проекты не трогает."
 
 [dependencies]
+luck-engine = { package = "luck", path = "vendor/luck-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"

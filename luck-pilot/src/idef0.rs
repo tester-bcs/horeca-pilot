@@ -1,18 +1,32 @@
 //! Мета-технология «Агент-BPWin»: IDEF0-модель (функциональные блоки ICOM)
-//! → исполнимый Luck-план. Одна декларация блока → все производные.
+//! → исполнимый граф luck-engine (`IntentGraph`). Одна декларация блока →
+//! все производные.
 //!
-//! Маппинг ICOM → Luck:
-//!   Function        → NODE (kind: step/tool/classify/verify/branch)
-//!   Input/Output    → потоки данных (INPUT/INTO), рёбра по соответствию имён
-//!   Control         → рёбра-управления + VERIFY-предикаты (v2)
-//!   Mechanism       → TOOL-имя (v2)
-//!   Декомпозиция    → children (v2: SPAWN-подграфы; v1: документируется)
+//! Маппинг ICOM → Luck (канонический реестр vendor/luck-engine):
+//!   Function        → NODE STEP/TOOL/CLASSIFY (DO/CALL/INPUT — по kind)
+//!   Input/Output     → потоки данных: рёбра Seq по соответствию имён output/input
+//!   Control          → VERIFY-слот (checker="not_empty" по умолчанию) — детерминированная
+//!                      проверка, а не решение модели о себе
+//!   Mechanism        → TOOL-имя (kind=tool; CALL <механизм>)
+//!   Декомпозиция     → children (v2: SPAWN-подграфы; v1: разворачивается плоско)
 //!
-//! Ограничение v1 (честно): IDEF0 выражает ФУНКЦИИ и ПОТОКИ, но не РЕШЕНИЯ.
-//! Ветвление (BRANCH) в IDEF0 не выражается — добавляется на этапе Luck-графа
-//! (см. docs/AGENT-BPWIN.md).
+//! Отличие от старой версии (форк, автономный luck_plan::Node/Plan —
+//! удалён): целевой IR теперь `luck_engine::parser::{IntentGraph, Node}`,
+//! конструируемый НАПРЯМУЮ (`Node::new` + `IntentGraph::add_node/add_edge`),
+//! а не через парсинг сгенерированного текста — идиоматичнее для типов,
+//! которые уже публично конструируемы (см. vendor/luck-engine/src/lib.rs
+//! тест `concurrent_identical_spawn_yields_single_node_no_corruption`,
+//! строящий узлы тем же способом).
+//!
+//! Ограничение v1 (честно, как и раньше): IDEF0 выражает ФУНКЦИИ и ПОТОКИ,
+//! не РЕШЕНИЯ. Ветвление (в терминах реестра — Branch-рёбра `=>` от
+//! CLASSIFY/FILTER-узла) в IDEF0-модели не выражается через ICOM
+//! напрямую — для этого блок должен объявить `kind: "branch"`, тогда он
+//! маппится на CLASSIFY, а `branches` объявляет метка -> id блока
+//! (Branch-рёбра, не Seq).
 
-use crate::luck_plan::{Edge, EdgeType, Limits, Node, NodeKind, Plan, VerifySpec};
+use luck_engine::parser::{Edge, EdgeType, IntentGraph, Node, SlotData};
+use luck_engine::registry::{Kind, Subtype};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,9 +34,11 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
     pub id: String,
-    /// Функция: что делает блок (становится DO узла).
+    /// Функция: что делает блок (становится DO/CALL/INPUT узла).
     pub function: String,
-    /// Природа: step | tool | classify | verify | branch (default: step).
+    /// Природа: step | tool | classify | branch (default: step).
+    /// "verify" из старой версии больше не отдельный kind — это слот
+    /// (см. `verify` ниже), сохранён как алиас, включающий VERIFY-слот на STEP.
     #[serde(default)]
     pub kind: Option<String>,
     /// Потоки-входы (имена, ссылающиеся на outputs других блоков).
@@ -31,16 +47,16 @@ pub struct Block {
     /// Управления: условия/пороги (control-стрелки IDEF0).
     #[serde(default)]
     pub controls: Vec<String>,
-    /// Потоки-выходы (имена — становятся INTO узла, первый = результат).
+    /// Потоки-выходы (имена — становятся именем узла-источника для рёбер, первый = результат).
     #[serde(default)]
     pub outputs: Vec<String>,
-    /// Механизмы: кто/что выполняет (система, человек, ERP).
+    /// Механизмы: кто/что выполняет (для kind=tool — имя CALL).
     #[serde(default)]
     pub mechanisms: Vec<String>,
-    /// Декомпозиция блока (уровни IDEF0; v1 — документируется, v2 — SPAWN).
+    /// Декомпозиция блока (уровни IDEF0; v1 — разворачивается плоско).
     #[serde(default)]
     pub children: Vec<Block>,
-    /// Для kind=branch: метка ветки → id целевого блока.
+    /// Для kind=branch: метка ветки → id целевого блока (Branch-ребро).
     #[serde(default)]
     pub branches: Vec<(String, String)>,
 }
@@ -73,68 +89,112 @@ impl Idef0Model {
     }
 }
 
-/// Маппер: IDEF0-модель → валидный Luck-план.
-pub fn map_to_plan(model: &Idef0Model) -> Plan {
-    let blocks = model.flatten();
+fn s(v: &str) -> SlotData {
+    SlotData::Str(v.to_string())
+}
+fn ident(v: &str) -> SlotData {
+    SlotData::Ident(v.to_string())
+}
+fn args(pairs: Vec<(&str, String)>) -> SlotData {
+    SlotData::Args(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+}
 
-    // Узлы: каждый блок → Node.
-    let mut nodes: Vec<Node> = Vec::new();
+/// Маппер: IDEF0-модель → валидный граф luck-engine (`IntentGraph`).
+pub fn map_to_graph(model: &Idef0Model) -> IntentGraph {
+    let blocks = model.flatten();
+    let mut graph = IntentGraph::default();
+
     for b in &blocks {
-        let kind = match b.kind.as_deref().unwrap_or("step") {
-            "tool" => NodeKind::Tool,
-            "classify" => NodeKind::Classify,
-            "verify" => NodeKind::Verify,
-            "branch" => NodeKind::Branch,
-            _ => NodeKind::Step,
-        };
-        let into = b.outputs.first().cloned();
-        let mut node = Node {
-            id: b.id.clone(),
-            kind,
-            into,
-            input: b.inputs.first().cloned(),
-            labels: Vec::new(),
-            branches: BTreeMap::new(),
-            tool: None,
-            args: serde_json::Value::Null,
-            policy: None,
-            verify: None,
-            on_fail: None,
-            do_: Some(b.function.clone()),
-            slots: serde_json::json!({}),
-        };
-        if kind == NodeKind::Verify {
-            node.verify = Some(crate::luck_plan::VerifySpec {
-                predicate: "not_empty".into(),
-                subject: b.inputs.first().cloned(),
-            });
-        }
-        if kind == NodeKind::Branch {
-            for (label, target) in &b.branches {
-                node.branches.entry(label.clone()).or_default().push(target.clone());
+        let kind_str = b.kind.as_deref().unwrap_or("step");
+        let into = b.outputs.first().cloned().unwrap_or_else(|| format!("{}_out", b.id));
+
+        let node = match kind_str {
+            "tool" => {
+                let tool_name = b
+                    .mechanisms
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| b.id.clone());
+                let mut slots: BTreeMap<&'static str, SlotData> = BTreeMap::new();
+                slots.insert("tool", ident(&tool_name));
+                slots.insert("args", SlotData::Args(Vec::new()));
+                slots.insert("policy", SlotData::Args(Vec::new()));
+                Node::new(b.id.clone(), Subtype::External, Kind::Tool, slots)
             }
-        }
-        nodes.push(node);
+            "classify" | "branch" => {
+                // branch: у CLASSIFY нет отдельного узла BRANCH в каноническом
+                // реестре — ветвление выражается Branch-рёбрами (см. `branches`
+                // ниже), сам узел — обычный CLASSIFY. LABELS строятся из
+                // `branches`, если заданы, иначе из controls (пороговые условия).
+                let label_source: Vec<String> = if !b.branches.is_empty() {
+                    b.branches.iter().map(|(l, _)| l.clone()).collect()
+                } else if !b.controls.is_empty() {
+                    b.controls.clone()
+                } else {
+                    vec!["ok".to_string()]
+                };
+                let mut slots: BTreeMap<&'static str, SlotData> = BTreeMap::new();
+                slots.insert("input", s(&b.function));
+                slots.insert(
+                    "labels",
+                    args(label_source.iter().map(|l| (l.as_str(), format!("\"{l}\""))).collect()),
+                );
+                slots.insert("into", ident(&into));
+                Node::new(b.id.clone(), Subtype::Generative, Kind::Classify, slots)
+            }
+            _ => {
+                // step (и legacy "verify"): VERIFY-слот включается, когда
+                // controls непусты (IDEF0-порог) или kind явно "verify" —
+                // предикат по умолчанию not_empty (форменная честность,
+                // Срез 4), домен-специфичный checker подставляется вызывающим
+                // кодом постфактум (у IDEF0 самого по себе нет понятия
+                // "какой бизнес-предикат" — это решение уровня Luck-графа).
+                let mut slots: BTreeMap<&'static str, SlotData> = BTreeMap::new();
+                slots.insert("do", s(&b.function));
+                let verify_slot = if kind_str == "verify" || !b.controls.is_empty() {
+                    args(vec![("checker", "\"not_empty\"".to_string())])
+                } else {
+                    SlotData::Args(Vec::new())
+                };
+                slots.insert("verify", verify_slot);
+                slots.insert("into", ident(&into));
+                Node::new(b.id.clone(), Subtype::Generative, Kind::Step, slots)
+            }
+        };
+        graph.add_node(node).expect("уникальные id блоков IDEF0");
     }
 
-    // Рёбра: соответствие output(from) ∈ input/control(to).
-    let mut edges: Vec<Edge> = Vec::new();
-    let ids: Vec<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-    for from in &ids {
-        let from_block = blocks.iter().find(|b| b.id.as_str() == *from).unwrap();
-        for to in &ids {
-            if from == to {
+    // Рёбра: соответствие output(from) ∈ input/control(to) → Seq;
+    // для kind=branch — Branch-рёбра по `branches` (метка -> целевой блок).
+    let ids: Vec<String> = blocks.iter().map(|b| b.id.clone()).collect();
+    for from_id in &ids {
+        let from_block = blocks.iter().find(|b| &b.id == from_id).unwrap();
+        if from_block.kind.as_deref() == Some("branch") && !from_block.branches.is_empty() {
+            for (label, target) in &from_block.branches {
+                if ids.contains(target) {
+                    graph.add_edge(Edge {
+                        source: from_id.clone(),
+                        target: target.clone(),
+                        edge_type: EdgeType::Branch,
+                        label: Some(label.clone()),
+                    });
+                }
+            }
+            continue;
+        }
+        for to_id in &ids {
+            if from_id == to_id {
                 continue;
             }
-            let to_block = blocks.iter().find(|b| b.id.as_str() == *to).unwrap();
+            let to_block = blocks.iter().find(|b| &b.id == to_id).unwrap();
             let linked = from_block
                 .outputs
                 .iter()
                 .any(|o| to_block.inputs.contains(o) || to_block.controls.contains(o));
             if linked {
-                edges.push(Edge {
-                    from: from.to_string(),
-                    to: to.to_string(),
+                graph.add_edge(Edge {
+                    source: from_id.clone(),
+                    target: to_id.clone(),
                     edge_type: EdgeType::Seq,
                     label: None,
                 });
@@ -142,22 +202,12 @@ pub fn map_to_plan(model: &Idef0Model) -> Plan {
         }
     }
 
-    Plan {
-        plan_version: 1,
-        nodes,
-        edges,
-        limits: Limits {
-            max_nodes: 64,
-            max_depth: 8,
-            max_tokens_per_node: 4096,
-        },
-    }
+    graph
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::luck_plan::validate;
 
     /// Демо: HoReCa-дневной цикл, описанный как IDEF0-модель.
     fn horeca_model() -> Idef0Model {
@@ -266,26 +316,93 @@ mod tests {
     }
 
     #[test]
-    fn map_horeca_model_to_valid_plan() {
+    fn map_horeca_model_to_valid_graph() {
         let model = horeca_model();
-        let plan = map_to_plan(&model);
+        let graph = map_to_graph(&model);
         // A0 не должен стать узлом исполнения (контекст), только дети.
-        assert!(plan.nodes.iter().all(|n| n.id != "A0"));
-        assert_eq!(plan.nodes.len(), 8);
-        // Валидность: версия, дубли, ghost-узлы, циклы, вход.
-        validate(&plan).expect("план из IDEF0-модели должен быть валиден");
+        assert!(!graph.nodes.contains_key("A0"));
+        assert_eq!(graph.nodes.len(), 8);
+        // Валидность: рёбра ссылаются только на объявленные узлы.
+        graph
+            .validate_edge_endpoints()
+            .expect("граф из IDEF0-модели должен быть валиден");
         // Рёбра: порядок A1→A2→…→A8.
-        let e12 = plan.edges.iter().any(|e| e.from == "A1" && e.to == "A2");
-        let e78 = plan.edges.iter().any(|e| e.from == "A7" && e.to == "A8");
+        let e12 = graph.edges.iter().any(|e| e.source == "A1" && e.target == "A2");
+        let e78 = graph.edges.iter().any(|e| e.source == "A7" && e.target == "A8");
         assert!(e12, "A1→A2 по orders");
         assert!(e78, "A7→A8 по invoice");
         // INTO = первый output.
-        let a1 = plan.nodes.iter().find(|n| n.id == "A1").unwrap();
-        assert_eq!(a1.into.as_deref(), Some("orders"));
-        // Verify-узел: предикат not_empty, subject = первый input.
-        let a5 = plan.nodes.iter().find(|n| n.id == "A5").unwrap();
-        let v = a5.verify.as_ref().expect("A5 должен иметь verify-спека");
-        assert_eq!(v.predicate, "not_empty");
-        assert_eq!(v.subject.as_deref(), Some("picked_order"));
+        let a1 = &graph.nodes["A1"];
+        assert_eq!(a1.slots.get("into"), Some(&SlotData::Ident("orders".to_string())));
+        // Verify-узел (kind="verify" legacy): checker=not_empty в слоте verify.
+        let a5 = &graph.nodes["A5"];
+        match a5.slots.get("verify") {
+            Some(SlotData::Args(pairs)) => {
+                assert!(pairs.iter().any(|(k, v)| k == "checker" && v.contains("not_empty")));
+            }
+            other => panic!("A5 должен иметь непустой verify-слот, получено {other:?}"),
+        }
+    }
+
+    #[test]
+    fn branch_block_produces_branch_edges() {
+        let model = Idef0Model {
+            context: Block {
+                id: "R".into(),
+                function: "root".into(),
+                kind: None,
+                inputs: vec![],
+                controls: vec![],
+                outputs: vec![],
+                mechanisms: vec![],
+                branches: vec![],
+                children: vec![
+                    Block {
+                        id: "gate".into(),
+                        function: "оценить состояние".into(),
+                        kind: Some("branch".into()),
+                        inputs: vec![],
+                        controls: vec![],
+                        outputs: vec![],
+                        mechanisms: vec![],
+                        branches: vec![("ok".into(), "go".into()), ("bad".into(), "stop".into())],
+                        children: vec![],
+                    },
+                    Block {
+                        id: "go".into(),
+                        function: "продолжить".into(),
+                        kind: None,
+                        inputs: vec![],
+                        controls: vec![],
+                        outputs: vec![],
+                        mechanisms: vec![],
+                        branches: vec![],
+                        children: vec![],
+                    },
+                    Block {
+                        id: "stop".into(),
+                        function: "остановиться".into(),
+                        kind: None,
+                        inputs: vec![],
+                        controls: vec![],
+                        outputs: vec![],
+                        mechanisms: vec![],
+                        branches: vec![],
+                        children: vec![],
+                    },
+                ],
+            },
+        };
+        let graph = map_to_graph(&model);
+        assert_eq!(graph.nodes["gate"].kind, Kind::Classify);
+        let branch_edges: Vec<_> = graph
+            .edges
+            .iter()
+            .filter(|e| e.edge_type == EdgeType::Branch)
+            .collect();
+        assert_eq!(branch_edges.len(), 2);
+        assert!(branch_edges
+            .iter()
+            .any(|e| e.source == "gate" && e.target == "go" && e.label.as_deref() == Some("ok")));
     }
 }

@@ -1,25 +1,39 @@
-//! OpenRouterRuntime — PlanRuntime через OpenRouter API (реальная модель).
+//! Транспорты (`luck_engine::anthropic::ChatTransport`) для OpenRouter и
+//! Ollama — заменяет старый `PlanRuntime` (форк удалён вместе с
+//! src/luck_scheduler.rs). Канонический luck-engine ожидает `ModelBackend`
+//! (scheduler.rs) — но полную грамматическую валидацию/ретраи по
+//! содержимому уже реализует `anthropic::ValidatingBackend<T: ChatTransport>`
+//! (см. vendor/luck-engine/src/anthropic.rs). Решение миграции: не писать
+//! ModelBackend с нуля, а реализовать только тонкий ChatTransport (текст ->
+//! текст, свои сетевые ретраи) и обернуть его в vendor-овский
+//! ValidatingBackend — переиспользуем всю логику грамматики/few-shot/
+//! повторов вместо повторной реализации.
+//!
 //! Модель по умолчанию: nvidia/nemotron-3-super-120b-a12b:free (free tier).
 //! Ключ: OPENROUTER_API_KEY из окружения.
-//! call_tool: v1 — детерминированный мок с демо-данными (внешние ERP/API
-//! ещё не подключены); помечается в выводе как [mock].
 
-use crate::luck_scheduler::PlanRuntime;
-use async_trait::async_trait;
+use luck_engine::anthropic::{ChatTransport, TransportError};
 use serde_json::{json, Value};
 use std::time::Duration;
 
 pub const DEFAULT_MODEL: &str = "nvidia/nemotron-3-super-120b-a12b:free";
 const API_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 
-pub struct OpenRouterRuntime {
+pub struct OpenRouterTransport {
     api_key: String,
     model: String,
+    agent: ureq::Agent,
+    pub calls: u64,
 }
 
-impl OpenRouterRuntime {
+impl OpenRouterTransport {
     pub fn new(api_key: String, model: String) -> Self {
-        Self { api_key, model }
+        Self {
+            api_key,
+            model,
+            agent: ureq::AgentBuilder::new().build(),
+            calls: 0,
+        }
     }
 
     /// Из окружения; дефолтная модель nemotron free.
@@ -30,71 +44,76 @@ impl OpenRouterRuntime {
         Ok(Self::new(key, model))
     }
 
-    fn chat(&self, system: Option<&str>, user: &str) -> Result<String, String> {
-        let mut messages = Vec::new();
-        if let Some(sys) = system {
-            messages.push(json!({"role": "system", "content": sys}));
-        }
-        messages.push(json!({"role": "user", "content": user}));
+    pub fn is_configured(&self) -> bool {
+        !self.api_key.is_empty()
+    }
+}
+
+impl ChatTransport for OpenRouterTransport {
+    fn call_count(&self) -> u64 {
+        self.calls
+    }
+
+    fn call(&mut self, prompt: &str) -> Result<String, TransportError> {
+        self.calls += 1;
         let body = json!({
             "model": self.model,
-            "messages": messages,
-            "max_tokens": 256,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 2000,
             "temperature": 0.2,
         });
-        let resp = ureq::post(API_URL)
-            .timeout(Duration::from_secs(10))
+        let resp = self
+            .agent
+            .post(API_URL)
+            .timeout(Duration::from_secs(180))
             .set("Authorization", &format!("Bearer {}", self.api_key))
             .set("Content-Type", "application/json")
-            .send_json(body)
-            .map_err(|e| format!("openrouter http: {e}"))?;
-        let v: Value = resp.into_json().map_err(|e| format!("openrouter json: {e}"))?;
-        if let Some(err) = v.get("error") {
-            return Err(format!("openrouter error: {err}"));
+            .send_json(body);
+        match resp {
+            Ok(r) => {
+                let v: Value = r
+                    .into_json()
+                    .map_err(|e| TransportError::Fatal(format!("openrouter json: {e}")))?;
+                if let Some(err) = v.get("error") {
+                    return Err(TransportError::Transient(format!("openrouter error: {err}")));
+                }
+                let content = v["choices"][0]["message"]["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_string();
+                Ok(content)
+            }
+            Err(ureq::Error::Status(code, r)) => {
+                let body_text = r.into_string().unwrap_or_default();
+                if (400..500).contains(&code) && code != 429 {
+                    Err(TransportError::Fatal(format!("HTTP {code}: {body_text}")))
+                } else {
+                    Err(TransportError::Transient(format!("HTTP {code}: {body_text}")))
+                }
+            }
+            Err(e) => Err(TransportError::Transient(e.to_string())),
         }
-        let content = v["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if content.is_empty() {
-            return Err("openrouter: пустой ответ модели".to_string());
-        }
-        Ok(content)
     }
 }
 
-#[async_trait]
-impl PlanRuntime for OpenRouterRuntime {
-    async fn generate(&self, system: Option<&str>, user: &str) -> Result<String, String> {
-        let system = system.map(str::to_string);
-        let user = user.to_string();
-        let key = self.api_key.clone();
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || {
-            let rt = OpenRouterRuntime::new(key, model);
-            rt.chat(system.as_deref(), &user)
-        })
-        .await
-        .map_err(|e| format!("task: {e}"))?
-    }
-
-    async fn call_tool(&self, name: &str, _args: &Value) -> Result<String, String> {
-        Ok(format!("[mock:{name}] {{}}"))
-    }
-}
-
-/// OllamaRuntime — фоллбэк: локальная Ollama (без reasoning-моделей!).
-/// Модель по умолчанию qwen2.5-coder:3b (быстрая, без thinking-бюджета).
-/// Хост/модель: env OLLAMA_HOST (default http://localhost:11434), OLLAMA_MODEL.
-pub struct OllamaRuntime {
+/// OllamaTransport — фоллбэк: локальная Ollama (без reasoning-моделей!).
+/// Модель по умолчанию qwen2.5-coder:3b. Хост/модель: env OLLAMA_HOST
+/// (default http://localhost:11434), OLLAMA_MODEL.
+pub struct OllamaTransport {
     host: String,
     model: String,
+    agent: ureq::Agent,
+    pub calls: u64,
 }
 
-impl OllamaRuntime {
+impl OllamaTransport {
     pub fn new(host: String, model: String) -> Self {
-        Self { host, model }
+        Self {
+            host,
+            model,
+            agent: ureq::AgentBuilder::new().build(),
+            calls: 0,
+        }
     }
 
     pub fn from_env() -> Self {
@@ -102,100 +121,103 @@ impl OllamaRuntime {
         let model = std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "qwen2.5-coder:3b".into());
         Self::new(host, model)
     }
+}
 
-    fn chat(&self, system: Option<&str>, user: &str) -> Result<String, String> {
-        let mut messages = Vec::new();
-        if let Some(sys) = system {
-            messages.push(json!({"role": "system", "content": sys}));
-        }
-        messages.push(json!({"role": "user", "content": user}));
+impl ChatTransport for OllamaTransport {
+    fn call_count(&self) -> u64 {
+        self.calls
+    }
+
+    fn call(&mut self, prompt: &str) -> Result<String, TransportError> {
+        self.calls += 1;
         let body = json!({
             "model": self.model,
-            "messages": messages,
+            "messages": [{"role": "user", "content": prompt}],
             "stream": false,
-            "options": {"num_predict": 256, "temperature": 0.2},
+            "options": {"num_predict": 512, "temperature": 0.2},
         });
-        let resp = ureq::post(&format!("{}/api/chat", self.host))
+        let resp = self
+            .agent
+            .post(&format!("{}/api/chat", self.host))
             .timeout(Duration::from_secs(120))
-            .send_json(body)
-            .map_err(|e| format!("ollama http: {e}"))?;
-        let v: Value = resp.into_json().map_err(|e| format!("ollama json: {e}"))?;
-        let content = v["message"]["content"].as_str().unwrap_or("").trim().to_string();
-        if content.is_empty() {
-            return Err("ollama: пустой ответ модели".to_string());
+            .send_json(body);
+        match resp {
+            Ok(r) => {
+                let v: Value = r
+                    .into_json()
+                    .map_err(|e| TransportError::Fatal(format!("ollama json: {e}")))?;
+                Ok(v["message"]["content"].as_str().unwrap_or("").to_string())
+            }
+            Err(e) => Err(TransportError::Transient(format!("ollama http: {e}"))),
         }
-        Ok(content)
     }
 }
 
-#[async_trait]
-impl PlanRuntime for OllamaRuntime {
-    async fn generate(&self, system: Option<&str>, user: &str) -> Result<String, String> {
-        let system = system.map(str::to_string);
-        let user = user.to_string();
-        let host = self.host.clone();
-        let model = self.model.clone();
-        tokio::task::spawn_blocking(move || {
-            let rt = OllamaRuntime::new(host, model);
-            rt.chat(system.as_deref(), &user)
-        })
-        .await
-        .map_err(|e| format!("task: {e}"))?
-    }
-
-    async fn call_tool(&self, name: &str, _args: &Value) -> Result<String, String> {
-        Ok(format!("[mock:{name}] {{}}"))
-    }
+/// FallbackTransport — цепочка: OpenRouter (nemotron free) -> Ollama
+/// (локальная). Если OpenRouter недоступен/ошибка временная — узел
+/// исполняется на Ollama. Fatal-ошибки OpenRouter (401/403/...) тоже
+/// падают в Ollama (в отличие от одиночного транспорта, где Fatal
+/// останавливает весь обход) — это осознанное расширение поведения
+/// старого FallbackRuntime, не регресс: единственный транспорт не может
+/// решить "остановиться" за пользователя, если есть второй под рукой.
+pub struct FallbackTransport {
+    openrouter: OpenRouterTransport,
+    ollama: OllamaTransport,
+    ollama_only: bool,
 }
 
-/// FallbackRuntime — цепочка: OpenRouter (nemotron free) -> Ollama (локальная).
-/// Если OpenRouter недоступен/ошибка/таймаут — узел исполняется на Ollama.
-pub struct FallbackRuntime {
-    openrouter: OpenRouterRuntime,
-    ollama: OllamaRuntime,
-}
-
-impl FallbackRuntime {
+impl FallbackTransport {
     pub fn from_env() -> Result<Self, String> {
         Ok(Self {
-            openrouter: OpenRouterRuntime::from_env()?,
-            ollama: OllamaRuntime::from_env(),
+            openrouter: OpenRouterTransport::from_env()?,
+            ollama: OllamaTransport::from_env(),
+            ollama_only: std::env::var("OLLAMA_ONLY").is_ok(),
         })
     }
 
-    /// Только Ollama (без попыток OpenRouter): env OLLAMA_ONLY=1.
+    /// Только Ollama (без попыток OpenRouter).
     pub fn ollama_only() -> Self {
         Self {
-            openrouter: OpenRouterRuntime::new(String::new(), String::new()),
-            ollama: OllamaRuntime::from_env(),
+            openrouter: OpenRouterTransport::new(String::new(), String::new()),
+            ollama: OllamaTransport::from_env(),
+            ollama_only: true,
         }
     }
 }
 
-#[async_trait]
-impl PlanRuntime for FallbackRuntime {
-    async fn generate(&self, system: Option<&str>, user: &str) -> Result<String, String> {
-        let ollama_only = std::env::var("OLLAMA_ONLY").is_ok();
-        if ollama_only || self.openrouter.api_key.is_empty() {
-            return self.ollama.generate(system, user).await;
+impl ChatTransport for FallbackTransport {
+    fn call_count(&self) -> u64 {
+        self.openrouter.calls + self.ollama.calls
+    }
+
+    fn call(&mut self, prompt: &str) -> Result<String, TransportError> {
+        if self.ollama_only || !self.openrouter.is_configured() {
+            return self.ollama.call(prompt);
         }
-        match self.openrouter.generate(system, user).await {
+        match self.openrouter.call(prompt) {
             Ok(v) => Ok(v),
             Err(e) => {
                 eprintln!("[fallback] openrouter: {e} -> ollama");
-                self.ollama.generate(system, user).await
+                self.ollama.call(prompt)
             }
         }
     }
+}
 
-    async fn call_tool(&self, name: &str, args: &Value) -> Result<String, String> {
-        // v1: демо-данные внешних систем (помечены [mock]).
-        let demo = match name {
-            "count_api" => r#"{"book": 100, "actual": 98, "allowed": 5}"#,
-            "receivables_api" => r#"{"total": 250000, "due_30": 80000}"#,
-            "credit_api" => r#"{"limit": 100000, "outstanding": 80000}"#,
-            _ => "{}",
-        };
-        Ok(format!("[mock:{name}] {demo}"))
-    }
+/// Реестр демо-инструментов (внешние ERP/API ещё не подключены, v1) —
+/// регистрируется в `luck_engine::scheduler::ToolRegistry`, используется
+/// всеми 4 сценариями HoReCa. Помечает вывод как детерминированный мок
+/// (не [mock]-префикс, как в старом PlanRuntime::call_tool — здесь тул
+/// сам решает, что вернуть, планировщик не отличает мок от реального
+/// вызова, поэтому обманывать формат незачем).
+pub fn register_demo_tools(tools: &mut luck_engine::scheduler::ToolRegistry) {
+    tools.register("count_api", |_args| {
+        r#"{"book": 100, "actual": 98, "allowed": 5}"#.to_string()
+    });
+    tools.register("receivables_api", |_args| {
+        r#"{"total": 250000, "due_30": 80000}"#.to_string()
+    });
+    tools.register("credit_api", |_args| {
+        r#"{"limit": 100000, "outstanding": 80000}"#.to_string()
+    });
 }

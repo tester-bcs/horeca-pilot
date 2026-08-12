@@ -1,0 +1,37 @@
+NODE role: ROLE [GENERATIVE]
+  AS "senior code reviewer, thorough on correctness, security, performance, readability, test coverage"
+END
+
+NODE diff: TOOL [EXTERNAL]
+  CALL git_diff WITH path="."
+END
+
+NODE classify_risk: CLASSIFY [GENERATIVE]
+  INPUT "the diff shown above in context"
+  LABELS a="trivial", b="moderate", c="high_risk"
+  INTO risk
+END
+
+NODE is_trivial: FILTER [GENERATIVE]
+  WHERE risk = "trivial"
+  INTO gate
+END
+
+NODE quick_note: STEP [GENERATIVE]
+  DO "write one sentence confirming this is a low-risk change, name what changed"
+  INTO note
+END
+
+NODE deep_review: SPAWN [GENERATIVE]
+  PLAN "for each real finding across correctness, security, performance, readability, test coverage, output one STEP node whose DO text starts with a bracketed CATEGORY and SEVERITY tag like [SECURITY][CRITICAL] followed by a one-sentence description, skip axes with nothing to report, do not invent other node kinds"
+  INTO findings
+END
+
+EDGES:
+  role -> diff
+  diff -> classify_risk
+  classify_risk -> is_trivial
+  is_trivial => quick_note [on_match]
+  is_trivial => deep_review [on_no_match]
+  diff -> deep_review
+END

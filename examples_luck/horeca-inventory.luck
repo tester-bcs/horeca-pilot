@@ -1,81 +1,60 @@
 # Сценарий №3: инвентаризация и списания (HoReCa)
-# Ритм неделя/месяц (Срез 5), честность остатков (Срез 4 — карточка = факт).
+# Соглашения BRANCH/MERGE/VERIFY/POLICY — см. horeca-daily-cycle.luck (шапка).
 # TOOL-узлы возвращают JSON: count_api -> {book, actual, allowed}.
 
-# --- Запуск инвентаризации: заморозить склад (A2) ---
-NODE freeze: STEP
+NODE freeze: STEP [GENERATIVE]
   DO "заморозить склад для инвентаризации: стоп отгрузок и приёмок"
   INTO freeze_doc
 END
 
-# --- Пересчёт фактических остатков (A2) ---
-NODE count: TOOL
-  TOOL count_api
-  ARGS {"scope": "all"}
-  INTO counted
+NODE count: TOOL [EXTERNAL]
+  CALL count_api WITH scope="all"
 END
 
-# --- Сверка учёта и факта: JSON для VERIFY/отчёта ---
-NODE compare: STEP
-  AS "Ты сверщик остатков. Верни ТОЛЬКО валидный JSON без пояснений: {\"book\": <число>, \"actual\": <число>, \"allowed\": <число>}. Никакого текста вокруг."
-  DO "сверить учётные остатки с фактическими, зафиксировать расхождения"
-  INPUT counted
+NODE compare: STEP [GENERATIVE]
+  DO "сверить учётные остатки с фактическими, зафиксировать расхождения: JSON {book, actual, allowed}"
   INTO diff_data
 END
 
-# --- Классификация расхождения: МЕТКА для ветвления (не JSON!) ---
-NODE classify_diff: CLASSIFY
-  AS "Ты классификатор расхождений инвентаризации. Ответь РОВНО одним словом: ok (расхождение в пределах нормы) или deviation (отклонение выше нормы). Никаких пояснений."
-  DO "оценить расхождение: в пределах нормы или отклонение"
-  INPUT diff_data
+NODE classify_diff: CLASSIFY [GENERATIVE]
+  INPUT "расхождение между учётными и фактическими остатками: в пределах нормы или отклонение"
+  LABELS ok="норма", deviation="отклонение"
   INTO diff_state
 END
 
-# --- Ветвление: расхождение в пределах нормы или нет (Срез 5 — порог) ---
-NODE fork_diff: BRANCH
-  INPUT diff_state
-  BRANCHES ok=write_off, deviation=investigate
-END
-
-# --- Ветка ok: расхождение в норме — списания в пределах допуска ---
-NODE write_off: STEP
+NODE write_off: STEP [GENERATIVE]
   DO "списать потери в пределах нормы: просрочка, бой, усушка"
   INTO write_off_doc
 END
 
-# --- Ветка deviation: расхождение выше нормы — расследование ---
-NODE investigate: STEP
+NODE investigate: STEP [GENERATIVE]
   DO "расследовать крупное расхождение: ошибка учёта, кража, недоприёмка"
   INTO investigation
 END
 
-# --- Решение по итогам расследования: списание или переоценка ---
-NODE resolve: STEP
+NODE resolve: STEP [GENERATIVE]
   DO "принять решение по расхождению: списать, переоценить, завести на ответственного"
   INTO resolution
 END
 
-# --- Схождение: закрыть инвентаризацию, обновить карточки (A2) ---
-NODE close_inventory: STEP
+NODE close_inventory: STEP [GENERATIVE]
   DO "закрыть инвентаризацию: обновить учётные остатки, сформировать акт"
   INTO inventory_act
 END
 
-# --- Отчёт (A7): потери и расхождения за период ---
-NODE inventory_report: STEP
+NODE inventory_report: STEP [GENERATIVE]
   DO "сформировать отчёт: потери, расхождения, тренд по периодам"
   INTO inventory_report_doc
 END
 
-EDGES
+EDGES:
   freeze -> count
   count -> compare
   compare -> classify_diff
-  classify_diff -> fork_diff
-  fork_diff -> write_off [ok]
-  fork_diff -> investigate [deviation]
+  classify_diff => write_off [норма]
+  classify_diff => investigate [отклонение]
   investigate -> resolve
-  write_off -> close_inventory
-  resolve -> close_inventory
+  write_off ~> close_inventory
+  resolve ~> close_inventory
   close_inventory -> inventory_report
 END
