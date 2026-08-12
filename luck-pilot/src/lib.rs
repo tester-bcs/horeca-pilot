@@ -13,6 +13,7 @@ pub mod luck_plan;
 pub mod luck_compile;
 pub mod luck_scheduler;
 pub mod openrouter;
+pub mod idef0;
 
 pub use luck_plan::{Node, NodeKind, Plan, Policy, VerifySpec, validate, parse_and_validate};
 pub use luck_compile::compile;

@@ -1,0 +1,19 @@
+{
+  "context": {
+    "id": "A0",
+    "function": "Обеспечивать производство и торговлю HoReCa",
+    "inputs": ["заказы"],
+    "controls": ["нормы"],
+    "outputs": ["отчёт_дня"],
+    "children": [
+      { "id": "A1", "function": "Принять заказы клиентов", "inputs": ["заказы"], "outputs": ["orders"] },
+      { "id": "A2", "function": "Составить план производства", "inputs": ["orders"], "outputs": ["production_plan"] },
+      { "id": "A3", "function": "Произвести продукцию", "inputs": ["production_plan"], "outputs": ["finished_goods"] },
+      { "id": "A4", "function": "Скомплектовать заказ", "inputs": ["finished_goods"], "outputs": ["picked_order"] },
+      { "id": "A5", "function": "Проверить полноту комплектации", "kind": "verify", "inputs": ["picked_order"], "outputs": ["full_order"] },
+      { "id": "A6", "function": "Доставить заказ клиенту", "inputs": ["full_order"], "outputs": ["delivery_note"] },
+      { "id": "A7", "function": "Выставить счёт", "inputs": ["delivery_note"], "outputs": ["invoice"] },
+      { "id": "A8", "function": "Сформировать отчёт дня", "inputs": ["invoice"], "controls": ["нормы"], "outputs": ["отчёт_дня"] }
+    ]
+  }
+}
