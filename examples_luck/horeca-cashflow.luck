@@ -42,9 +42,16 @@ NODE verify_credit: STEP [GENERATIVE]
   INTO client_credit
 END
 
-NODE settle_cash: STEP [GENERATIVE]
-  DO "провести платёжный день: исходящие, входящие, остаток на конец дня"
-  INTO cash_day
+NODE settle_plan: SPAWN [GENERATIVE]
+  PLAN "разложить платёжный день на подзадачи-узлы STEP (без TOOL): исходящие
+        платежи поставщикам, входящие платежи от клиентов, сверка остатка на
+        конец дня. Каждый узел -- отдельный STEP с DO и INTO. id узлов должны
+        начинаться с префикса settle_ (например settle_outflow, settle_inflow,
+        settle_close) и не совпадать ни с одним из уже существующих в графе id:
+        load_receivables, forecast, classify_risk, pay_suppliers, hold_payments,
+        check_credit, verify_credit, settle_plan, cash_report."
+  BUDGET nodes="4", depth="1"
+  INTO settle_subgraph
 END
 
 NODE cash_report: STEP [GENERATIVE]
@@ -58,8 +65,8 @@ EDGES:
   classify_risk => pay_suppliers [норма]
   classify_risk => hold_payments [риск]
   check_credit -> verify_credit
-  pay_suppliers ~> settle_cash
-  hold_payments ~> settle_cash
-  verify_credit -> settle_cash
-  settle_cash -> cash_report
+  pay_suppliers ~> settle_plan
+  hold_payments ~> settle_plan
+  verify_credit -> settle_plan
+  settle_plan -> cash_report
 END
