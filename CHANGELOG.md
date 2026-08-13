@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+### Добавлено
+- Политика синка с апстримом `tester-bcs/luck`: пин коммита в
+  `luck-pilot/vendor/VENDOR.md`, проверка `scripts/check-luck-upstream.sh`
+  (сверяет пин с последним коммитом апстрима, затрагивающим `rust/`).
+- SPAWN-вложенность опробована на A6 (`horeca-cashflow.luck`, `settle_plan`) —
+  структурно работает, но качество ответов страдает от эхо-бага вендора;
+  задокументировано как известное ограничение (docs/TECH.md).
+
 ### Удалено
 - `luck-core/` (старый reference-форк канонического крейта) — дублировал
   `luck-pilot/vendor/luck-engine/`, теперь единственный источник правды.
