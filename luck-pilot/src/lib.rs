@@ -12,9 +12,12 @@
 //!   - `verify` — VERIFY-предикаты бизнес-домена (HoReCa) + enforcement
 //!     слота VERIFY, который vendor только парсит, но не проверяет.
 //!   - `idef0` — маппер IDEF0 (ICOM-блоки) -> граф luck-engine.
+//!   - `icom` — валидатор ICOM-баланса: полнота модели до маппинга
+//!     (`map_to_graph_checked`) и целостность SPAWN-подграфа постфактум.
 //!   - `openrouter` — ChatTransport для OpenRouter/Ollama, обёрнутый в
 //!     vendor-овский `anthropic::ValidatingBackend`.
 
+pub mod icom;
 pub mod idef0;
 pub mod openrouter;
 pub mod verify;
