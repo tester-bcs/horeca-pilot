@@ -72,3 +72,6 @@ HoReCa-специфика (IDEF0-маппер, бизнес-предикаты, 
 - Репо: https://github.com/tester-bcs/horeca-pilot (public, open source)
 - Апстрим Luck: https://github.com/tester-bcs/luck (канонический язык + Rust-рантайм)
 - Технические детали: docs/TECH.md
+- Пояснительная записка (валидатор ICOM, интервью-агент, метод проверки,
+  открытые вопросы): docs/EXPLANATORY-NOTE.md
+- Мета-технология «обследование → пайп»: docs/AGENT-BPWIN.md

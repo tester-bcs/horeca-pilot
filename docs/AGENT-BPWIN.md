@@ -1,5 +1,8 @@
 # Агент-BPWin: мета-технология «обследование → работающий пайп»
 
+> Разбор сделанного, метод проверки и открытые вопросы —
+> [EXPLANATORY-NOTE.md](EXPLANATORY-NOTE.md).
+
 ## Суть
 
 Клиент пайпа (предприятие) НЕ рисует диаграммы. Клиент отвечает на вопросы
@@ -22,8 +25,8 @@
 |---|---|
 | Function | NODE (kind: step/tool/classify/verify/branch) |
 | Input/Output | потоки: INPUT/INTO, рёбра по соответствию имён |
-| Control | рёбра-управления; VERIFY-предикаты (v2) |
-| Mechanism | TOOL-имя (v2) |
+| Control | VERIFY-слот (checker по умолчанию `not_empty`); POLICY |
+| Mechanism | TOOL-имя (`CALL <механизм>`) / ROLE |
 | Декомпозиция | children (v2: SPAWN-подграфы) |
 | A-0 контекст | рамка, НЕ исполняется — исполняется декомпозиция |
 
@@ -86,7 +89,7 @@ OrphanBlock     → «Шаг ни с чем не связан. Куда он в�
 - [x] Тест: HoReCa-модель (A1..A8) → валидный план, verify-узел с not_empty
 - [x] examples_luck/horeca-model.json — демо-модель
 - [x] Интервью-агент — `luck-pilot/src/interview.rs` (см. раздел «Как устроен
-      интервью-агент» ниже), CLI `cargo run --bin interview -- model.json`
+      интервью-агент» выше), CLI `cargo run --bin interview -- model.json`
 - [x] Валидатор полноты модели (висячие стрелки, пустые блоки) — `src/icom.rs`,
       16 правил ICOM-баланса + `map_to_graph_checked`; CLI: `validate <model.json>`.
       Подробности и граница применимости к SPAWN — [ICOM-VALIDATOR.md](ICOM-VALIDATOR.md)
