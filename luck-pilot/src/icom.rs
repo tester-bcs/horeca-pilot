@@ -14,7 +14,7 @@
 //! ограничивают их КОЛИЧЕСТВО; что подграф связен по данным — не проверяет
 //! никто. Границы этой проверки честно описаны над `validate_spawned`.
 
-use crate::idef0::{Block, Idef0Model};
+use crate::idef0::{flow_edges, Block, Idef0Model};
 use luck_engine::parser::{IntentGraph, SlotData};
 use luck_engine::scheduler::ExecutionResult;
 use std::collections::{BTreeMap, BTreeSet};
@@ -197,36 +197,6 @@ pub fn validate_decomposition(parent: &Block, children: &[Block]) -> Vec<Violati
     out
 }
 
-/// Рёбра исполнения — ЗЕРКАЛО правила из `idef0::map_to_graph`. Держать в
-/// соответствии с маппером обязательно: проверка, считающая связи иначе,
-/// чем их строит маппер, бесполезна (и опаснее отсутствия проверки).
-fn execution_edges(blocks: &[Block]) -> Vec<(String, String)> {
-    let mut out = Vec::new();
-    for from in blocks {
-        if from.kind.as_deref() == Some("branch") && !from.branches.is_empty() {
-            for (_, target) in &from.branches {
-                if blocks.iter().any(|b| &b.id == target) {
-                    out.push((from.id.clone(), target.clone()));
-                }
-            }
-            continue;
-        }
-        for to in blocks {
-            if from.id == to.id {
-                continue;
-            }
-            let linked = from
-                .outputs
-                .iter()
-                .any(|o| to.inputs.contains(o) || to.controls.contains(o));
-            if linked {
-                out.push((from.id.clone(), to.id.clone()));
-            }
-        }
-    }
-    out
-}
-
 /// Проверки уровня всего графа исполнения — те, что не видны при взгляде на
 /// одну декомпозицию: цикл, петля, неоднозначный источник, сирота, ветвление.
 /// Найдены атакующими тестами (`tests/icom_attack.rs`), каждая соответствует
@@ -307,10 +277,10 @@ fn validate_execution_graph(model: &Idef0Model) -> Vec<Violation> {
     // Цикл по данным: Scheduler вернёт Err («граф содержит цикл, не разрешимый
     // обходом»). Правила уровня одной декомпозиции цикл не видят — каждый вход
     // формально «производится соседом».
-    let edges = execution_edges(&blocks);
+    let edges = flow_edges(&blocks);
     let mut indeg: BTreeMap<&str, usize> = blocks.iter().map(|b| (b.id.as_str(), 0)).collect();
-    for (_, to) in &edges {
-        if let Some(d) = indeg.get_mut(to.as_str()) {
+    for e in &edges {
+        if let Some(d) = indeg.get_mut(e.to.as_str()) {
             *d += 1;
         }
     }
@@ -322,12 +292,12 @@ fn validate_execution_graph(model: &Idef0Model) -> Vec<Violation> {
     let mut settled = 0usize;
     while let Some(id) = queue.pop() {
         settled += 1;
-        for (from, to) in &edges {
-            if from == id {
-                if let Some(d) = indeg.get_mut(to.as_str()) {
+        for e in &edges {
+            if e.from == id {
+                if let Some(d) = indeg.get_mut(e.to.as_str()) {
                     *d -= 1;
                     if *d == 0 {
-                        queue.push(to.as_str());
+                        queue.push(e.to.as_str());
                     }
                 }
             }
@@ -350,8 +320,8 @@ fn validate_execution_graph(model: &Idef0Model) -> Vec<Violation> {
     // Сирота: блок вне потока целиком.
     if blocks.len() > 1 {
         for b in &blocks {
-            let has_in = edges.iter().any(|(_, to)| to == &b.id);
-            let has_out = edges.iter().any(|(from, _)| from == &b.id);
+            let has_in = edges.iter().any(|e| e.to == b.id);
+            let has_out = edges.iter().any(|e| e.from == b.id);
             if !has_in && !has_out {
                 out.push(Violation::warn(
                     &b.id,

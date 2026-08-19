@@ -99,6 +99,60 @@ fn args(pairs: Vec<(&str, String)>) -> SlotData {
     SlotData::Args(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
 }
 
+/// Связь между блоками с типом ребра — результат `flow_edges`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlowEdge {
+    pub from: String,
+    pub to: String,
+    pub edge_type: EdgeType,
+    pub label: Option<String>,
+}
+
+/// ЕДИНСТВЕННЫЙ источник правды о том, какие связи порождает IDEF0-модель.
+///
+/// Правило: `output(A) ∈ inputs(B) ∪ controls(B)` → Seq-ребро A→B; для
+/// `kind = "branch"` — только Branch-рёбра по `branches`, Seq не строятся.
+///
+/// Вынесено из `map_to_graph`, чтобы валидатор (`icom`) считал связи ТОЙ ЖЕ
+/// функцией, а не своей копией правила: проверка, разошедшаяся с маппером,
+/// опаснее отсутствия проверки — она подтверждает то, чего в графе нет.
+pub fn flow_edges(blocks: &[Block]) -> Vec<FlowEdge> {
+    let mut out = Vec::new();
+    for from in blocks {
+        if from.kind.as_deref() == Some("branch") && !from.branches.is_empty() {
+            for (label, target) in &from.branches {
+                if blocks.iter().any(|b| &b.id == target) {
+                    out.push(FlowEdge {
+                        from: from.id.clone(),
+                        to: target.clone(),
+                        edge_type: EdgeType::Branch,
+                        label: Some(label.clone()),
+                    });
+                }
+            }
+            continue;
+        }
+        for to in blocks {
+            if from.id == to.id {
+                continue;
+            }
+            let linked = from
+                .outputs
+                .iter()
+                .any(|o| to.inputs.contains(o) || to.controls.contains(o));
+            if linked {
+                out.push(FlowEdge {
+                    from: from.id.clone(),
+                    to: to.id.clone(),
+                    edge_type: EdgeType::Seq,
+                    label: None,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// Маппер: IDEF0-модель → валидный граф luck-engine (`IntentGraph`).
 pub fn map_to_graph(model: &Idef0Model) -> IntentGraph {
     let blocks = model.flatten();
@@ -164,42 +218,14 @@ pub fn map_to_graph(model: &Idef0Model) -> IntentGraph {
         graph.add_node(node).expect("уникальные id блоков IDEF0");
     }
 
-    // Рёбра: соответствие output(from) ∈ input/control(to) → Seq;
-    // для kind=branch — Branch-рёбра по `branches` (метка -> целевой блок).
-    let ids: Vec<String> = blocks.iter().map(|b| b.id.clone()).collect();
-    for from_id in &ids {
-        let from_block = blocks.iter().find(|b| &b.id == from_id).unwrap();
-        if from_block.kind.as_deref() == Some("branch") && !from_block.branches.is_empty() {
-            for (label, target) in &from_block.branches {
-                if ids.contains(target) {
-                    graph.add_edge(Edge {
-                        source: from_id.clone(),
-                        target: target.clone(),
-                        edge_type: EdgeType::Branch,
-                        label: Some(label.clone()),
-                    });
-                }
-            }
-            continue;
-        }
-        for to_id in &ids {
-            if from_id == to_id {
-                continue;
-            }
-            let to_block = blocks.iter().find(|b| &b.id == to_id).unwrap();
-            let linked = from_block
-                .outputs
-                .iter()
-                .any(|o| to_block.inputs.contains(o) || to_block.controls.contains(o));
-            if linked {
-                graph.add_edge(Edge {
-                    source: from_id.clone(),
-                    target: to_id.clone(),
-                    edge_type: EdgeType::Seq,
-                    label: None,
-                });
-            }
-        }
+    // Рёбра — через `flow_edges`, общий с валидатором (см. её док-коммент).
+    for e in flow_edges(&blocks) {
+        graph.add_edge(Edge {
+            source: e.from,
+            target: e.to,
+            edge_type: e.edge_type,
+            label: e.label,
+        });
     }
 
     graph
