@@ -12,6 +12,8 @@
 //!   - `verify` — VERIFY-предикаты бизнес-домена (HoReCa) + enforcement
 //!     слота VERIFY, который vendor только парсит, но не проверяет.
 //!   - `idef0` — маппер IDEF0 (ICOM-блоки) -> граф luck-engine.
+//!   - `interview` — интервью-агент: обследование разговором -> IDEF0-модель
+//!     (что спросить — детерминированно по валидатору; LLM только извлекает).
 //!   - `icom` — валидатор ICOM-баланса: полнота модели до маппинга
 //!     (`map_to_graph_checked`) и целостность SPAWN-подграфа постфактум.
 //!   - `openrouter` — ChatTransport для OpenRouter/Ollama, обёрнутый в
@@ -19,6 +21,7 @@
 
 pub mod icom;
 pub mod idef0;
+pub mod interview;
 pub mod openrouter;
 pub mod verify;
 
